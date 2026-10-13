@@ -1,0 +1,176 @@
+name: Build Cannon Firmware Packages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+          sudo apt-get clean
+          df -h /
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 p7zip-full
+
+      # Step 1: Download all 21 ROMs with max threads
+      - name: Download all ROMs
+        run: |
+          mkdir -p downloads
+          cat > urls.txt << 'URLS'
+          https://cdnorg.d.miui.com/V14.0.6.0.SJECNXM/miui_CANNON_V14.0.6.0.SJECNXM_8eb42b6abd_12.0.zip
+          https://cdnorg.d.miui.com/V14.0.5.0.SJECNXM/miui_CANNON_V14.0.5.0.SJECNXM_3de84bdf81_12.0.zip
+          https://cdnorg.d.miui.com/V14.0.2.0.SJECNXM/miui_CANNON_V14.0.2.0.SJECNXM_37e6139886_12.0.zip
+          https://cdnorg.d.miui.com/V13.0.5.0.SJECNXM/miui_CANNON_V13.0.5.0.SJECNXM_27fd95e41b_12.0.zip
+          https://cdnorg.d.miui.com/V13.0.3.0.SJECNXM/miui_CANNON_V13.0.3.0.SJECNXM_e0fdc7880b_12.0.zip
+          https://cdnorg.d.miui.com/V12.0.11.0.QJECNXM/miui_CANNON_V12.0.11.0.QJECNXM_158b46963a_10.0.zip
+          https://cdnorg.d.miui.com/V13.0.2.0.SJECNXM/miui_CANNON_V13.0.2.0.SJECNXM_9f45a3cc45_12.0.zip
+          https://cdnorg.d.miui.com/V13.0.1.0.SJECNXM/miui_CANNON_V13.0.1.0.SJECNXM_9a9a01d76e_12.0.zip
+          https://cdnorg.d.miui.com/V12.5.9.0.RJECNXM/miui_CANNON_V12.5.9.0.RJECNXM_6c53fed2d8_11.0.zip
+          https://cdnorg.d.miui.com/V12.5.8.0.RJECNXM/miui_CANNON_V12.5.8.0.RJECNXM_1201c1e8c1_11.0.zip
+          https://cdnorg.d.miui.com/V12.5.7.0.RJECNXM/miui_CANNON_V12.5.7.0.RJECNXM_683a6cb9f1_11.0.zip
+          https://cdnorg.d.miui.com/V12.5.6.0.RJECNXM/miui_CANNON_V12.5.6.0.RJECNXM_03e11a1f94_11.0.zip
+          https://cdnorg.d.miui.com/V12.5.4.0.RJECNXM/miui_CANNON_V12.5.4.0.RJECNXM_f248e88994_11.0.zip
+          https://cdnorg.d.miui.com/V12.5.3.0.RJECNXM/miui_CANNON_V12.5.3.0.RJECNXM_9a6ee651c7_11.0.zip
+          https://cdnorg.d.miui.com/V12.5.2.0.RJECNXM/miui_CANNON_V12.5.2.0.RJECNXM_577e820250_11.0.zip
+          https://cdnorg.d.miui.com/V12.5.1.0.RJECNXM/miui_CANNON_V12.5.1.0.RJECNXM_6873b51dd8_11.0.zip
+          https://cdnorg.d.miui.com/V12.0.9.0.QJECNXM/miui_CANNON_V12.0.9.0.QJECNXM_873e9cfff9_10.0.zip
+          https://cdnorg.d.miui.com/V12.0.8.0.QJECNXM/miui_CANNON_V12.0.8.0.QJECNXM_2710ca256e_10.0.zip
+          https://cdnorg.d.miui.com/V12.0.6.0.QJECNXM/miui_CANNON_V12.0.6.0.QJECNXM_1e4df76006_10.0.zip
+          https://cdnorg.d.miui.com/V12.0.5.0.QJECNXM/miui_CANNON_V12.0.5.0.QJECNXM_f7f281427e_10.0.zip
+          https://cdnorg.d.miui.com/V12.0.3.0.QJECNXM/miui_CANNON_V12.0.3.0.QJECNXM_1fd3c53c91_10.0.zip
+          URLS
+          aria2c -x 16 -s 16 -j 5 -d downloads -i urls.txt --file-allocation=none
+
+      # Steps 2-4: Create processing script (in-place modify zip using 7za)
+      - name: Create processing script
+        run: |
+          cat > edit_updater_script.py << 'PYEOF'
+          import re, sys
+
+          path = sys.argv[1]
+          with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+              content = f.read()
+
+          # Remove the entire dynamic partitions patching section (inclusive)
+          content = re.sub(
+              r'# --- Start patching dynamic partitions ---.*?# --- End patching dynamic partitions ---\s*',
+              '',
+              content,
+              flags=re.DOTALL
+          )
+
+          # Remove boot.img / vbmeta flashing commands
+          for p in [
+              r'package_extract_file\("boot\.img"[^)]*\);\s*',
+              r'package_extract_file\("vbmeta_system\.img"[^)]*\);\s*',
+              r'package_extract_file\("vbmeta\.img"[^)]*\);\s*',
+              r'package_extract_file\("vbmeta_vendor\.img"[^)]*\);\s*',
+          ]:
+              content = re.sub(p, '', content)
+
+          # Clean up excessive blank lines
+          content = re.sub(r'\n{3,}', '\n\n', content)
+
+          with open(path, 'w', encoding='utf-8') as f:
+              f.write(content)
+          PYEOF
+
+          cat > process_rom.sh << 'BASHEOF'
+          #!/bin/bash
+          set -euo pipefail
+
+          zip_file="$1"
+          filename=$(basename "$zip_file")
+
+          # Transform filename:
+          #   miui_CANNON_V14.0.6.0.SJECNXM_8eb42b6abd_12.0.zip
+          # → miui_CANNON_V14.0.6.0.SJECNXM_12.0_firmware.zip
+          output_name=$(echo "$filename" | sed -E 's/_[0-9a-f]{10}_/_/' | sed 's/\.zip$/_firmware.zip/')
+          output_file="$GITHUB_WORKSPACE/output/$output_name"
+
+          mkdir -p "$GITHUB_WORKSPACE/output"
+
+          # --- Step 2: Extract updater-script to temp, edit it ---
+          tmp_dir=$(mktemp -d)
+
+          updater_script="META-INF/com/google/android/updater-script"
+          if 7za l "$zip_file" -slt | grep "^Path" | sed 's/^Path = //' | grep -q "^updater-script$"; then
+              echo "[$filename] Editing updater-script in-place..."
+              7za x "$zip_file" "$updater_script" -o"$tmp_dir" -y
+
+              python3 "$GITHUB_WORKSPACE/edit_updater_script.py" "$tmp_dir/$updater_script"
+
+              # Update the updater-script back into the zip (store mode, no recompression)
+              cd "$tmp_dir"
+              7za u "$zip_file" "$updater_script" -mx0
+              cd "$GITHUB_WORKSPACE"
+          else
+              echo "[$filename] updater-script not found, skipping script edit..."
+          fi
+
+          # --- Step 3: Delete partition images from zip (ignore if absent) ---
+          echo "[$filename] Removing partition images from zip..."
+
+          # Get the list of files in the zip
+          zip_contents=$(7za l "$zip_file" -slt | grep "^Path" | sed 's/^Path = //')
+
+          # Build list of files to delete - check which ones actually exist in the zip
+          delete_list=""
+          for pattern in "boot.img" "dynamic_partitions_op_list" \
+                          "product.new.dat" "product.patch.dat" "product.transfer.list" "product.new.dat.br" \
+                          "system.new.dat" "system.patch.dat" "system.transfer.list" "system.new.dat.br" \
+                          "vbmeta.img" "vbmeta_system.img" "vbmeta_vendor.img" \
+                          "vendor.new.dat" "vendor.patch.dat" "vendor.transfer.list" "vendor.new.dat.br"; do
+              if echo "$zip_contents" | grep -qx "$pattern"; then
+                  delete_list="$delete_list \"$pattern\""
+              fi
+          done
+
+          if [ -n "$delete_list" ]; then
+              echo "[$filename] Deleting from zip:$delete_list"
+              eval 7za d "$zip_file" $delete_list
+          else
+              echo "[$filename] No partition images found in zip to delete"
+          fi
+
+          # --- Step 5: Copy to output with firmware suffix ---
+          cp "$zip_file" "$output_file"
+          echo "[$filename] Done! → $output_name"
+          echo "  Size: $(ls -lh "$output_file" | awk '{print $5}')"
+
+          # Cleanup
+          rm -rf "$tmp_dir"
+          BASHEOF
+          chmod +x process_rom.sh
+
+      # Steps 2-5: Process all ROMs in parallel
+      - name: Process all ROMs
+        run: |
+          mkdir -p output
+          find downloads -name '*.zip' -print0 | xargs -0 -P"$(nproc)" -I{} ./process_rom.sh {}
+
+      - name: Summary
+        run: |
+          echo "=== Output files ==="
+          ls -lh output/
+          echo ""
+          echo "Total: $(ls -1 output/*.zip 2>/dev/null | wc -l) packages"
+          du -sh output/
+
+      # Step 6: Upload all firmware packages
+      - name: Upload firmware packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: cannon-firmware-packages
+          path: output/*.zip
+          retention-days: 30
+          if-no-files-found: error
