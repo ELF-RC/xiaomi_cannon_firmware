@@ -99,20 +99,22 @@ jobs:
 
           mkdir -p "$GITHUB_WORKSPACE/output"
 
-          # --- Step 2: Extract updater-script to temp, edit it ---
+          # --- Step 2: Extract updater-script, edit it, replace in zip ---
           tmp_dir=$(mktemp -d)
 
           updater_script="META-INF/com/google/android/updater-script"
-          if 7za l "$zip_file" -slt | grep "^Path" | sed 's/^Path = //' | grep -q "^updater-script$"; then
-              echo "[$filename] Editing updater-script in-place..."
+          if 7za l "$zip_file" -slt | grep "^Path" | sed 's/^Path = //' | grep -q "$updater_script"; then
+              echo "[$filename] Extracting & editing updater-script..."
               7za x "$zip_file" "$updater_script" -o"$tmp_dir" -y
 
               python3 "$GITHUB_WORKSPACE/edit_updater_script.py" "$tmp_dir/$updater_script"
 
-              # Update the updater-script back into the zip (store mode, no recompression)
+              # Delete old updater-script from zip, then add the edited one back
+              7za d "$zip_file" "$updater_script"
               cd "$tmp_dir"
-              7za u "$zip_file" "$updater_script" -mx0
+              7za a "$zip_file" "$updater_script" -mx0
               cd "$GITHUB_WORKSPACE"
+              echo "[$filename] updater-script replaced successfully"
           else
               echo "[$filename] updater-script not found, skipping script edit..."
           fi
