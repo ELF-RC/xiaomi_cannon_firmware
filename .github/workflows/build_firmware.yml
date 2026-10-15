@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 p7zip-full
+          sudo apt-get install -y aria2 p7zip-full zip
 
       # Step 1: Download all 21 ROMs with max threads
       - name: Download all ROMs
@@ -50,8 +50,8 @@ jobs:
           URLS
           aria2c -x 16 -s 16 -j 5 -d downloads -i urls.txt --file-allocation=none
 
-      # Steps 2-4: Create processing script (in-place modify zip using 7za)
-      - name: Create processing script
+      # Steps 2-5: Create processing scripts
+      - name: Create processing scripts
         run: |
           cat > edit_updater_script.py << 'PYEOF'
           import re, sys
@@ -99,50 +99,41 @@ jobs:
 
           mkdir -p "$GITHUB_WORKSPACE/output"
 
-          # --- Step 2: Extract updater-script, edit it, replace in zip ---
+          # --- Step 2: Extract updater-script, edit it ---
           tmp_dir=$(mktemp -d)
-
           updater_script="META-INF/com/google/android/updater-script"
+
           if 7za l "$zip_file" -slt | grep "^Path" | sed 's/^Path = //' | grep -q "$updater_script"; then
               echo "[$filename] Extracting & editing updater-script..."
               7za x "$zip_file" "$updater_script" -o"$tmp_dir" -y
 
               python3 "$GITHUB_WORKSPACE/edit_updater_script.py" "$tmp_dir/$updater_script"
 
-              # Delete old updater-script from zip, then add the edited one back
-              7za d "$zip_file" "$updater_script"
-              cd "$tmp_dir"
-              7za a "$zip_file" "$updater_script" -mx0
-              cd "$GITHUB_WORKSPACE"
-              echo "[$filename] updater-script replaced successfully"
+              # Use InfoZIP zip to update the file in-place (zip -j would strip path,
+              # so we cd into the META-INF parent to preserve the internal path)
+              # zip -0 = store (no compression) for this text file to match OTA convention
+              (cd "$tmp_dir" && zip -0 "$zip_file" "$updater_script")
+              echo "[$filename] updater-script updated in-place"
           else
               echo "[$filename] updater-script not found, skipping script edit..."
           fi
 
-          # --- Step 3: Delete partition images from zip (ignore if absent) ---
+          # --- Step 3+4: Delete partition images & vbmeta from zip ---
+          # Use InfoZIP zip -d which handles patterns and ignores missing files gracefully
           echo "[$filename] Removing partition images from zip..."
-
-          # Get the list of files in the zip
-          zip_contents=$(7za l "$zip_file" -slt | grep "^Path" | sed 's/^Path = //')
-
-          # Build list of files to delete - check which ones actually exist in the zip
-          delete_list=""
-          for pattern in "boot.img" "dynamic_partitions_op_list" \
-                          "product.new.dat" "product.patch.dat" "product.transfer.list" "product.new.dat.br" \
-                          "system.new.dat" "system.patch.dat" "system.transfer.list" "system.new.dat.br" \
-                          "vbmeta.img" "vbmeta_system.img" "vbmeta_vendor.img" \
-                          "vendor.new.dat" "vendor.patch.dat" "vendor.transfer.list" "vendor.new.dat.br"; do
-              if echo "$zip_contents" | grep -qx "$pattern"; then
-                  delete_list="$delete_list \"$pattern\""
-              fi
-          done
-
-          if [ -n "$delete_list" ]; then
-              echo "[$filename] Deleting from zip:$delete_list"
-              eval 7za d "$zip_file" $delete_list
-          else
-              echo "[$filename] No partition images found in zip to delete"
-          fi
+          # Build delete patterns - use zip -d with patterns (it ignores missing files)
+          # Patterns: boot.img dynamic_partitions_op_list product.* system.* vbmeta.* vendor.*
+          # We need to be careful: product.* matches product.new.dat etc, but NOT files like
+          # "product_service" or other non-partition files. In MIUI OTA zips these patterns
+          # only match the partition files we want to remove.
+          zip -d "$zip_file" \
+              "boot.img" \
+              "dynamic_partitions_op_list" \
+              "product.new.dat" "product.new.dat.br" "product.patch.dat" "product.transfer.list" \
+              "system.new.dat" "system.new.dat.br" "system.patch.dat" "system.transfer.list" \
+              "vbmeta.img" "vbmeta_system.img" "vbmeta_vendor.img" \
+              "vendor.new.dat" "vendor.new.dat.br" "vendor.patch.dat" "vendor.transfer.list" \
+              || echo "[$filename] (some files may not exist, that's OK)"
 
           # --- Step 5: Copy to output with firmware suffix ---
           cp "$zip_file" "$output_file"
@@ -174,5 +165,23 @@ jobs:
         with:
           name: cannon-firmware-packages
           path: output/*.zip
+          retention-days: 30
+          if-no-files-found: error
+
+      # Step 7: Upload highest version (V14.0.6.0) separately for testing
+      - name: Upload highest version (V14.0.6.0)
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-V14.0.6.0.SJECNXM
+          path: output/miui_CANNON_V14.0.6.0.SJECNXM_12.0_firmware.zip
+          retention-days: 30
+          if-no-files-found: error
+
+      # Step 8: Upload lowest version (V12.0.3.0) separately for testing
+      - name: Upload lowest version (V12.0.3.0)
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-V12.0.3.0.QJECNXM
+          path: output/miui_CANNON_V12.0.3.0.QJECNXM_10.0_firmware.zip
           retention-days: 30
           if-no-files-found: error
